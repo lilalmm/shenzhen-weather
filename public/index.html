@@ -376,13 +376,26 @@
 </div>
 
 <script>
-  let weatherData = null;
+  let currentOutTradeNo = null;
+  let pollTimer = null;
 
   // 从图标文字提取 emoji
   function extractEmoji(str) {
     const match = str.match(/[\u{1F300}-\u{1FFFF}]|[\u2600-\u26FF]|[\u2700-\u27BF]/u);
     return match ? match[0] : '🌡️';
   }
+
+  // 页面加载时检查是否从支付宝回跳
+  (function checkReturnFromPay() {
+    const params = new URLSearchParams(location.search);
+    if (params.get('paid') === '1') {
+      const tradeNo = params.get('tradeNo');
+      if (tradeNo) {
+        history.replaceState({}, '', '/');
+        loadFullWeatherByTradeNo(tradeNo);
+      }
+    }
+  })();
 
   // 加载免费预览数据
   async function loadPreview() {
@@ -405,81 +418,72 @@
     }
   }
 
-  // 开始支付流程
+  // 开始支付流程（普通用户 → 跳支付宝 App）
   async function startPayment() {
     const btn = document.getElementById('payBtn');
     const status = document.getElementById('payStatus');
     btn.disabled = true;
-    btn.textContent = '⏳ 请求中...';
+    btn.innerHTML = '⏳ 生成订单中...';
     status.textContent = '';
-    status.className = 'status-msg';
 
     try {
-      // 第一步：请求完整数据，获取 402 响应
-      const res = await fetch('/api/weather/full');
+      // 创建订单，获取支付宝收银台链接
+      const res = await fetch('/api/pay/create');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.message);
 
-      if (res.status === 402) {
-        const paymentNeeded = res.headers.get('Payment-Needed');
-        const body = await res.json();
+      currentOutTradeNo = json.outTradeNo;
 
-        status.textContent = '已生成支付请求，请使用支付宝 AI 完成付款';
-        status.className = 'status-msg success';
+      // 直接跳转支付宝收银台（手机会唤起 App，电脑显示二维码）
+      status.textContent = '正在跳转支付宝...';
+      status.className = 'status-msg success';
 
-        // 真实场景：将 Payment-Needed header 传给支付宝 alipay-bot 处理
-        // 这里展示支付信息提示
-        showPaymentGuide(paymentNeeded, body);
-      } else if (res.ok) {
-        // 已有凭证，直接显示
-        const json = await res.json();
-        showFullWeather(json.data);
-      }
+      // 开始轮询支付状态（用户从支付宝回来后会回调 /api/pay/return）
+      startPolling(json.outTradeNo);
+
+      // 跳转支付宝
+      window.location.href = json.payUrl;
+
     } catch(e) {
-      status.textContent = '请求失败：' + e.message;
+      status.textContent = '创建订单失败：' + e.message;
       status.className = 'status-msg error';
-    } finally {
       btn.disabled = false;
-      btn.innerHTML = '<span>💙</span> 支付宝 AI 付款';
+      btn.innerHTML = '<span class="alipay-logo">💙</span> 支付宝付款';
     }
   }
 
-  function showPaymentGuide(paymentNeeded, body) {
-    const modal = document.getElementById('payModal');
-    const qrArea = document.getElementById('qrArea');
-    const modalStatus = document.getElementById('modalStatus');
-
-    qrArea.innerHTML = `
-      <div style="color:#333;font-size:0.7rem;text-align:center">
-        <div style="font-size:2rem;margin-bottom:8px">💙</div>
-        <div style="font-weight:600;margin-bottom:4px">支付宝 AI 收款</div>
-        <div style="color:#666">请通过支付宝 AI Agent<br>完成 ¥${body.price || '0.10'} 付款</div>
-      </div>
-    `;
-    modalStatus.textContent = '在支付宝 App → 搜索「AI助理」→ 告知付款';
-    modal.classList.remove('hidden');
-
-    // 模拟：3秒后假设支付成功（实际需要 webhook 回调）
-    // 真实部署请替换为 WebSocket 或轮询支付状态
-    setTimeout(async () => {
-      modalStatus.textContent = '✅ 模拟支付成功，正在加载完整报告...';
-      modal.classList.add('hidden');
-      await loadFullWeather('demo_proof_' + Date.now());
-    }, 3000);
+  // 轮询支付状态
+  function startPolling(outTradeNo) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/pay/status?outTradeNo=${outTradeNo}`);
+        const json = await res.json();
+        if (json.paid && json.tradeNo) {
+          clearInterval(pollTimer);
+          await loadFullWeatherByTradeNo(json.tradeNo);
+        }
+      } catch(e) {}
+    }, 2000);
+    // 2分钟后停止轮询
+    setTimeout(() => clearInterval(pollTimer), 120000);
   }
 
-  async function loadFullWeather(proof) {
+  // 用 tradeNo 加载完整天气（支付验证）
+  async function loadFullWeatherByTradeNo(tradeNo) {
+    const status = document.getElementById('payStatus');
+    if (status) { status.textContent = '✅ 支付成功，加载报告中...'; status.className = 'status-msg success'; }
     try {
-      const res = await fetch('/api/weather/full?paymentProof=' + encodeURIComponent(proof));
+      const res = await fetch(`/api/weather/full?paymentProof=${encodeURIComponent(tradeNo)}`);
       const json = await res.json();
-      if (json.success) {
-        showFullWeather(json.data);
-      }
+      if (json.success) showFullWeather(json.data);
+      else if (status) { status.textContent = '验证失败，请联系客服'; status.className = 'status-msg error'; }
     } catch(e) {
-      console.error(e);
+      if (status) { status.textContent = '加载失败：' + e.message; status.className = 'status-msg error'; }
     }
   }
 
   function showFullWeather(data) {
-    weatherData = data;
     document.getElementById('payOverlay').classList.add('hidden');
 
     document.getElementById('feelsLike').textContent = data.feelsLikeC + '°C';

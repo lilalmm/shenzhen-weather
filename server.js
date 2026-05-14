@@ -198,8 +198,126 @@ function generate402Response(res, resourcePath) {
 }
 
 // ============================================================
-// API 路由
+// 支付宝 A2M 查单验证（验证 tradeNo 是否真实支付成功）
 // ============================================================
+async function verifyA2MPayment(tradeNo) {
+  if (!tradeNo || !/^\d{28,32}$/.test(tradeNo)) return false;
+  try {
+    // 调用支付宝查单接口验证交易状态
+    const timestamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+    const params = {
+      app_id: ALIPAY_APP_ID,
+      method: 'alipay.trade.query',
+      charset: 'utf-8',
+      sign_type: 'RSA2',
+      timestamp,
+      version: '1.0',
+      biz_content: JSON.stringify({ trade_no: tradeNo })
+    };
+    // 排序拼接签名串
+    const sortedKeys = Object.keys(params).sort();
+    const signStr = sortedKeys.map(k => `${k}=${params[k]}`).join('&');
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(signStr, 'utf8');
+    const keyPem = ALIPAY_PRIVATE_KEY.includes('BEGIN')
+      ? ALIPAY_PRIVATE_KEY
+      : `-----BEGIN RSA PRIVATE KEY-----\n${ALIPAY_PRIVATE_KEY}\n-----END RSA PRIVATE KEY-----`;
+    params.sign = signer.sign(keyPem, 'base64');
+
+    const queryStr = Object.keys(params).map(k =>
+      `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`
+    ).join('&');
+
+    const resp = await axios.post(
+      'https://openapi.alipay.com/gateway.do',
+      queryStr,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000 }
+    );
+    const result = resp.data?.alipay_trade_query_response;
+    return result?.code === '10000' && result?.trade_status === 'TRADE_SUCCESS';
+  } catch (e) {
+    console.error('验单失败:', e.message);
+    return false;
+  }
+}
+
+// ============================================================
+// 普通用户支付宝手机网站支付（生成收银台链接）
+// ============================================================
+async function createAlipayOrder(outTradeNo) {
+  if (!A2M_CONFIGURED) return null;
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+    const returnUrl = `https://shenzhen-weather-xk84.onrender.com/api/pay/return?trade_no=${outTradeNo}`;
+    const bizContent = JSON.stringify({
+      out_trade_no: outTradeNo,
+      total_amount: ALIPAY_PRICE,
+      subject: SERVICE_NAME,
+      product_code: 'QUICK_WAP_WAY'
+    });
+    const params = {
+      app_id: ALIPAY_APP_ID,
+      method: 'alipay.trade.wap.pay',
+      charset: 'utf-8',
+      sign_type: 'RSA2',
+      timestamp,
+      version: '1.0',
+      return_url: returnUrl,
+      biz_content: bizContent
+    };
+    const sortedKeys = Object.keys(params).sort();
+    const signStr = sortedKeys.map(k => `${k}=${params[k]}`).join('&');
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(signStr, 'utf8');
+    const keyPem = ALIPAY_PRIVATE_KEY.includes('BEGIN')
+      ? ALIPAY_PRIVATE_KEY
+      : `-----BEGIN RSA PRIVATE KEY-----\n${ALIPAY_PRIVATE_KEY}\n-----END RSA PRIVATE KEY-----`;
+    params.sign = signer.sign(keyPem, 'base64');
+
+    const payUrl = 'https://openapi.alipay.com/gateway.do?' +
+      Object.keys(params).map(k =>
+        `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`
+      ).join('&');
+    return payUrl;
+  } catch (e) {
+    console.error('创建支付宝订单失败:', e.message);
+    return null;
+  }
+}
+
+// 内存中存储待验证订单（生产环境应用 Redis/DB）
+const pendingOrders = new Map();
+
+// 普通用户：创建支付宝手机支付订单
+app.get('/api/pay/create', async (req, res) => {
+  const outTradeNo = `WEATHER_${Date.now()}_${uuidv4().replace(/-/g,'').slice(0,8).toUpperCase()}`;
+  pendingOrders.set(outTradeNo, { status: 'pending', created: Date.now() });
+  const payUrl = await createAlipayOrder(outTradeNo);
+  if (!payUrl) {
+    return res.status(500).json({ success: false, message: '支付服务暂不可用' });
+  }
+  res.json({ success: true, outTradeNo, payUrl });
+});
+
+// 支付宝支付回调（用户支付完跳回）
+app.get('/api/pay/return', async (req, res) => {
+  const { trade_no, out_trade_no } = req.query;
+  if (trade_no) {
+    pendingOrders.set(out_trade_no || trade_no, { status: 'paid', tradeNo: trade_no, paid: Date.now() });
+  }
+  res.redirect(`/?paid=1&tradeNo=${trade_no || ''}`);
+});
+
+// 前端轮询：查询订单是否支付成功
+app.get('/api/pay/status', async (req, res) => {
+  const { outTradeNo } = req.query;
+  const order = pendingOrders.get(outTradeNo);
+  if (!order) return res.json({ success: false, paid: false });
+  if (order.status === 'paid') {
+    return res.json({ success: true, paid: true, tradeNo: order.tradeNo });
+  }
+  res.json({ success: true, paid: false });
+});
 
 // 免费：获取天气预览（仅当日简要信息）
 app.get('/api/weather/preview', async (req, res) => {
@@ -224,32 +342,34 @@ app.get('/api/weather/preview', async (req, res) => {
 
 // 付费：获取完整天气报告（HTTP 402 保护）
 app.get('/api/weather/full', async (req, res) => {
-  // 检查支付凭证（x-payment-proof header 或 query 参数）
   const paymentProof = req.headers['x-payment-proof'] || req.query.paymentProof;
 
   if (!paymentProof) {
-    // 未携带支付凭证 → 返回 402，触发支付宝 A2M 支付流程
     return generate402Response(res, '/api/weather/full');
   }
 
-  // 验证支付凭证
-  // 真实场景：调用支付宝 A2M 查单接口验证 paymentProof（tradeNo）是否支付成功
-  // 目前：凭证格式为 "demo_proof_*" 时为演示模式直接放行；生产环境需替换为真实验签
-  const isDemoProof = paymentProof.startsWith('demo_proof_');
-  const isValidProof = isDemoProof || paymentProof.length >= 20; // 生产：调验证接口
+  // 真实验证：tradeNo 必须是纯数字28-32位（支付宝交易号格式）
+  const isA2MTradeNo = /^\d{28,32}$/.test(paymentProof);
+  // 普通用户支付回跳后凭证
+  const order = pendingOrders.get(paymentProof);
+  const isUserPaid = order?.status === 'paid';
 
-  if (!isValidProof) {
-    return res.status(401).json({ success: false, message: '无效的支付凭证' });
+  let verified = false;
+  if (isA2MTradeNo && A2M_CONFIGURED) {
+    // AI Agent 付款：调支付宝查单接口验证
+    verified = await verifyA2MPayment(paymentProof);
+  } else if (isUserPaid) {
+    // 普通用户：本地订单已标记支付成功
+    verified = true;
+  }
+
+  if (!verified) {
+    return res.status(401).json({ success: false, message: '支付验证失败，请先完成付款' });
   }
 
   try {
     const weather = await getShenZhenWeather();
-    res.json({
-      success: true,
-      preview: false,
-      demo: isDemoProof,
-      data: weather
-    });
+    res.json({ success: true, preview: false, data: weather });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
