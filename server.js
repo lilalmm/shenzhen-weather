@@ -147,9 +147,13 @@ function signA2M(protocolObj) {
 function generate402Response(res, resourcePath) {
   // 每次请求生成唯一订单号，支持多人并发下单
   const outTradeNo = `WEATHER_${Date.now()}_${uuidv4().replace(/-/g,'').slice(0,8).toUpperCase()}`;
-  // 支付有效期：2 小时，使用 UTC ISO 格式（支付宝标准格式，避免时区解析问题）
-  const payBefore = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  // 支付有效期：2小时，使用北京时间 +08:00 格式（与官方 A2M 一致）
+  const payBeforeDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  const bj = new Date(payBeforeDate.getTime() + 8 * 60 * 60 * 1000); // UTC+8
+  const payBefore = `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth()+1)}-${pad(bj.getUTCDate())}T${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())}+08:00`;
 
+  // protocol 字段与官方完全一致（签名字段包含 seller_sign_type 和 seller_unique_id）
   const protocol = {
     amount: ALIPAY_PRICE,
     currency: 'CNY',
