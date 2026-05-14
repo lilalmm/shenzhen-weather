@@ -10,11 +10,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // 支付宝 A2M 商户配置（通过环境变量注入）
-const ALIPAY_APP_ID     = process.env.ALIPAY_APP_ID     || '';
-const ALIPAY_SELLER_ID  = process.env.ALIPAY_SELLER_ID  || '';
-const ALIPAY_SERVICE_ID = process.env.ALIPAY_SERVICE_ID || '';
-const ALIPAY_PRIVATE_KEY = (process.env.ALIPAY_PRIVATE_KEY || '')
-  .replace(/\\n/g, '\n'); // 支持环境变量中用 \n 换行
+const ALIPAY_APP_ID      = process.env.ALIPAY_APP_ID     || '';
+const ALIPAY_SELLER_ID   = process.env.ALIPAY_SELLER_ID  || '';
+const ALIPAY_SERVICE_ID  = process.env.ALIPAY_SERVICE_ID || '';
+const ALIPAY_PRIVATE_KEY = (process.env.ALIPAY_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+// 支付宝公钥（用于验证支付宝回调签名）
+const ALIPAY_PUBLIC_KEY  = (process.env.ALIPAY_PUBLIC_KEY || '').replace(/\\n/g, '\n');
 const ALIPAY_PRICE = process.env.WEATHER_PRICE || '0.10';
 const SERVICE_NAME = '深圳每日天气报告';
 
