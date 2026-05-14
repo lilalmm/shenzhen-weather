@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: shenzhen-weather
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: WEATHER_PRICE
+        value: "0.10"
+      - key: ALIPAY_APP_ID
+        sync: false
+      - key: ALIPAY_SELLER_ID
+        sync: false
+      - key: ALIPAY_SERVICE_ID
+        sync: false
+      - key: ALIPAY_PRIVATE_KEY
+        sync: false
