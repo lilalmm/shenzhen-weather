@@ -145,11 +145,9 @@ function signA2M(protocolObj) {
 }
 
 function generate402Response(res, resourcePath) {
-  // 同一天同一资源使用固定订单号，避免 Agent 重试时报 REQUEST_EXPIRED
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const resourceKey = (resourcePath || '/api/weather/full').replace(/\//g, '').toUpperCase();
-  const outTradeNo = `WEATHER_${today}_${resourceKey}`;
-  // 支付有效期：2 小时（UTC 时间，不加时区偏移）
+  // 每次请求生成唯一订单号，支持多人并发下单
+  const outTradeNo = `WEATHER_${Date.now()}_${uuidv4().replace(/-/g,'').slice(0,8).toUpperCase()}`;
+  // 支付有效期：2 小时，使用 UTC ISO 格式（支付宝标准格式，避免时区解析问题）
   const payBefore = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
   const protocol = {
