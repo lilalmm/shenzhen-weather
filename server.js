@@ -156,16 +156,15 @@ function generate402Response(res, resourcePath) {
   const resPath = resourcePath || '/api/weather/full';
   const goodsName = SERVICE_NAME;
 
-  // 签名字段（严格按照官方 Java 示例，缺一不可）
+  // 签名字段（严格按官方实际格式，7个字段）
   const signParams = {
     amount: ALIPAY_PRICE,
     currency: 'CNY',
-    goods_name: goodsName,
     out_trade_no: outTradeNo,
     pay_before: payBefore,
     resource_id: resPath,
-    seller_id: ALIPAY_SELLER_ID,
-    service_id: ALIPAY_SERVICE_ID
+    seller_sign_type: 'RSA2',
+    seller_unique_id: ALIPAY_SELLER_ID
   };
 
   const sellerSignature = A2M_CONFIGURED ? signA2M(signParams) : 'DEMO_NOT_CONFIGURED';
