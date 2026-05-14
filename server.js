@@ -114,27 +114,26 @@ async function getShenZhenWeather() {
 
 // ============================================================
 // 支付宝 A2M HTTP 402 商户端实现
-// 协议结构来自逆向分析：Payment-Needed = base64(JSON{ method, protocol })
-// method: 商户信息；protocol: 订单信息 + RSA2 签名
+// 参考官方示例：A2MPaymentDemoController.java
 // ============================================================
 
 /**
- * 生成 RSA2 签名
- * 签名内容：将 protocol 对象按 key 字母序拼接 key=value&... 字符串
+ * 生成商家签名 seller_signature
+ * 签名字段（按官方示例）：amount, currency, goods_name, out_trade_no, pay_before, resource_id, seller_id, service_id
  */
-function signA2M(protocolObj) {
+function signA2M(signParams) {
   if (!ALIPAY_PRIVATE_KEY) return 'MISSING_KEY';
 
-  // 按字母序排列，拼接待签名字符串（排除 seller_signature 自身）
-  const keys = Object.keys(protocolObj)
-    .filter(k => k !== 'seller_signature' && protocolObj[k] !== undefined)
+  // 按字母序排列，过滤空值，拼接待签名字符串
+  const keys = Object.keys(signParams)
+    .filter(k => signParams[k] !== undefined && signParams[k] !== null && signParams[k] !== '')
     .sort();
-  const signStr = keys.map(k => `${k}=${protocolObj[k]}`).join('&');
+  const signStr = keys.map(k => `${k}=${signParams[k]}`).join('&');
+  console.log('待签名字符串:', signStr);
 
   try {
     const sign = crypto.createSign('RSA-SHA256');
     sign.update(signStr, 'utf8');
-    // 私钥需为 PKCS#8 或 PKCS#1 PEM 格式
     const keyPem = ALIPAY_PRIVATE_KEY.includes('BEGIN')
       ? ALIPAY_PRIVATE_KEY
       : `-----BEGIN RSA PRIVATE KEY-----\n${ALIPAY_PRIVATE_KEY}\n-----END RSA PRIVATE KEY-----`;
@@ -146,46 +145,53 @@ function signA2M(protocolObj) {
 }
 
 function generate402Response(res, resourcePath) {
-  // 每次请求生成唯一订单号，支持多人并发下单
   const outTradeNo = `WEATHER_${Date.now()}_${uuidv4().replace(/-/g,'').slice(0,8).toUpperCase()}`;
-  // 支付有效期：2小时，使用北京时间 +08:00 格式（与官方 A2M 一致）
-  const payBeforeDate = new Date(Date.now() + 2 * 60 * 60 * 1000);
+
+  // 支付截止时间：30分钟后，北京时间 +08:00（与官方示例一致）
+  const payBeforeDate = new Date(Date.now() + 30 * 60 * 1000);
   const pad = n => String(n).padStart(2, '0');
-  const bj = new Date(payBeforeDate.getTime() + 8 * 60 * 60 * 1000); // UTC+8
+  const bj = new Date(payBeforeDate.getTime() + 8 * 60 * 60 * 1000);
   const payBefore = `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth()+1)}-${pad(bj.getUTCDate())}T${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())}+08:00`;
 
-  // protocol 字段与官方完全一致（签名字段包含 seller_sign_type 和 seller_unique_id）
-  const protocol = {
+  const resPath = resourcePath || '/api/weather/full';
+  const goodsName = SERVICE_NAME;
+
+  // 签名字段（严格按照官方 Java 示例，缺一不可）
+  const signParams = {
     amount: ALIPAY_PRICE,
     currency: 'CNY',
+    goods_name: goodsName,
     out_trade_no: outTradeNo,
     pay_before: payBefore,
-    resource_id: resourcePath || '/api/weather/full',
-    seller_sign_type: 'RSA2',
-    seller_unique_id: ALIPAY_SELLER_ID
+    resource_id: resPath,
+    seller_id: ALIPAY_SELLER_ID,
+    service_id: ALIPAY_SERVICE_ID
   };
 
-  if (A2M_CONFIGURED) {
-    // 真实签名模式
-    protocol.seller_signature = signA2M(protocol);
-  } else {
-    // 演示模式：无签名（买方 CLI 会报签名失败，需要真实商户配置）
-    protocol.seller_signature = 'DEMO_NOT_CONFIGURED';
-  }
+  const sellerSignature = A2M_CONFIGURED ? signA2M(signParams) : 'DEMO_NOT_CONFIGURED';
 
+  // Payment-Needed JSON 结构（严格按官方示例）
   const payload = {
     method: {
-      goods_name: SERVICE_NAME,
+      goods_name: goodsName,
       seller_app_id: ALIPAY_APP_ID || 'DEMO_APP_ID',
       seller_id: ALIPAY_SELLER_ID || 'DEMO_SELLER_ID',
       seller_name: '深圳天气AI',
       seller_unique_id_key: 'seller_id',
       service_id: ALIPAY_SERVICE_ID || 'DEMO_SERVICE_ID'
     },
-    protocol
+    protocol: {
+      amount: ALIPAY_PRICE,
+      currency: 'CNY',
+      out_trade_no: outTradeNo,
+      pay_before: payBefore,
+      resource_id: resPath,
+      seller_signature: sellerSignature,
+      seller_sign_type: 'RSA2',
+      seller_unique_id: ALIPAY_SELLER_ID
+    }
   };
 
-  // base64url 编码（URL 安全）
   const paymentNeeded = Buffer.from(JSON.stringify(payload)).toString('base64url');
 
   res.status(402);
@@ -204,23 +210,22 @@ function generate402Response(res, resourcePath) {
 }
 
 // ============================================================
-// 支付宝 A2M 查单验证（验证 tradeNo 是否真实支付成功）
+// 支付宝 A2M 验证支付凭证（官方接口：alipay.aipay.agent.payment.verify）
 // ============================================================
-async function verifyA2MPayment(tradeNo) {
-  if (!tradeNo || !/^\d{28,32}$/.test(tradeNo)) return false;
+async function verifyA2MPayment(paymentProofValue, tradeNo) {
+  if (!paymentProofValue || !tradeNo) return false;
   try {
-    // 调用支付宝查单接口验证交易状态
     const timestamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+    const bizContent = JSON.stringify({ payment_proof: paymentProofValue, trade_no: tradeNo });
     const params = {
       app_id: ALIPAY_APP_ID,
-      method: 'alipay.trade.query',
+      method: 'alipay.aipay.agent.payment.verify',
       charset: 'utf-8',
       sign_type: 'RSA2',
       timestamp,
       version: '1.0',
-      biz_content: JSON.stringify({ trade_no: tradeNo })
+      biz_content: bizContent
     };
-    // 排序拼接签名串
     const sortedKeys = Object.keys(params).sort();
     const signStr = sortedKeys.map(k => `${k}=${params[k]}`).join('&');
     const signer = crypto.createSign('RSA-SHA256');
@@ -239,11 +244,44 @@ async function verifyA2MPayment(tradeNo) {
       queryStr,
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000 }
     );
-    const result = resp.data?.alipay_trade_query_response;
-    return result?.code === '10000' && result?.trade_status === 'TRADE_SUCCESS';
+    const result = resp.data?.alipay_aipay_agent_payment_verify_response;
+    console.log('验证结果:', JSON.stringify(result));
+    return result?.code === '10000' && result?.active === true;
   } catch (e) {
     console.error('验单失败:', e.message);
     return false;
+  }
+}
+
+// 发送履约确认（alipay.aipay.agent.fulfillment.confirm）
+async function fulfillmentAck(tradeNo) {
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+    const params = {
+      app_id: ALIPAY_APP_ID,
+      method: 'alipay.aipay.agent.fulfillment.confirm',
+      charset: 'utf-8',
+      sign_type: 'RSA2',
+      timestamp,
+      version: '1.0',
+      biz_content: JSON.stringify({ trade_no: tradeNo })
+    };
+    const sortedKeys = Object.keys(params).sort();
+    const signStr = sortedKeys.map(k => `${k}=${params[k]}`).join('&');
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(signStr, 'utf8');
+    const keyPem = ALIPAY_PRIVATE_KEY.includes('BEGIN')
+      ? ALIPAY_PRIVATE_KEY
+      : `-----BEGIN RSA PRIVATE KEY-----\n${ALIPAY_PRIVATE_KEY}\n-----END RSA PRIVATE KEY-----`;
+    params.sign = signer.sign(keyPem, 'base64');
+    const queryStr = Object.keys(params).map(k =>
+      `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`
+    ).join('&');
+    await axios.post('https://openapi.alipay.com/gateway.do', queryStr,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000 });
+    console.log('履约确认已发送:', tradeNo);
+  } catch (e) {
+    console.error('履约确认失败:', e.message);
   }
 }
 
@@ -348,25 +386,43 @@ app.get('/api/weather/preview', async (req, res) => {
 
 // 付费：获取完整天气报告（HTTP 402 保护）
 app.get('/api/weather/full', async (req, res) => {
-  const paymentProof = req.headers['x-payment-proof'] || req.query.paymentProof;
+  // Payment-Proof 来自 header（A2M Agent）或 query（普通用户回跳）
+  const paymentProof = req.headers['payment-proof'] || req.headers['x-payment-proof'] || req.query.paymentProof;
 
   if (!paymentProof) {
     return generate402Response(res, '/api/weather/full');
   }
 
-  // 真实验证：tradeNo 必须是纯数字28-32位（支付宝交易号格式）
-  const isA2MTradeNo = /^\d{28,32}$/.test(paymentProof);
-  // 普通用户支付回跳后凭证
+  let paymentProofValue = null;
+  let tradeNo = null;
+
+  // Payment-Proof 是 Base64URL 编码的 JSON（官方格式）
+  // 结构：{protocol: {payment_proof, trade_no}, method: {client_session}}
+  try {
+    const decoded = Buffer.from(paymentProof, 'base64url').toString('utf8');
+    const proofJson = JSON.parse(decoded);
+    paymentProofValue = proofJson?.protocol?.payment_proof;
+    tradeNo = proofJson?.protocol?.trade_no;
+  } catch (e) {
+    // 兼容旧格式：裸 tradeNo（纯数字）
+    if (/^\d{20,32}$/.test(paymentProof)) {
+      tradeNo = paymentProof;
+      paymentProofValue = paymentProof;
+    }
+  }
+
+  // 普通用户支付回跳
   const order = pendingOrders.get(paymentProof);
   const isUserPaid = order?.status === 'paid';
 
   let verified = false;
-  if (isA2MTradeNo && A2M_CONFIGURED) {
-    // AI Agent 付款：调支付宝查单接口验证
-    verified = await verifyA2MPayment(paymentProof);
-  } else if (isUserPaid) {
-    // 普通用户：本地订单已标记支付成功
+
+  if (isUserPaid) {
     verified = true;
+    tradeNo = order.tradeNo;
+  } else if (paymentProofValue && tradeNo && A2M_CONFIGURED) {
+    // A2M Agent：调支付宝验证接口
+    verified = await verifyA2MPayment(paymentProofValue, tradeNo);
   }
 
   if (!verified) {
@@ -375,6 +431,20 @@ app.get('/api/weather/full', async (req, res) => {
 
   try {
     const weather = await getShenZhenWeather();
+
+    // 发送履约确认
+    if (tradeNo && A2M_CONFIGURED) {
+      fulfillmentAck(tradeNo).catch(e => console.error('履约确认失败:', e.message));
+    }
+
+    // Payment-Validation header（官方标准）
+    const validationPayload = Buffer.from(JSON.stringify({
+      trade_no: tradeNo,
+      validated: true,
+      resource_id: '/api/weather/full'
+    })).toString('base64url');
+
+    res.set('Payment-Validation', validationPayload);
     res.json({ success: true, preview: false, data: weather });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
