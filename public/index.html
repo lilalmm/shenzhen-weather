@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>深圳天气 · 每日报告</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a6fcf 0%, #0f4fa8 40%, #071e6b 100%);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .header p {
+      margin-top: 6px;
+      opacity: 0.75;
+      font-size: 0.9rem;
+    }
+
+    .card {
+      background: rgba(255,255,255,0.12);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 20px;
+      width: 100%;
+      max-width: 480px;
+      padding: 28px 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+
+    /* 当前天气 */
+    .weather-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .weather-icon { font-size: 4.5rem; line-height: 1; }
+    .weather-temp {
+      text-align: right;
+    }
+    .weather-temp .temp {
+      font-size: 3.5rem;
+      font-weight: 300;
+      line-height: 1;
+    }
+    .weather-temp .desc {
+      font-size: 1rem;
+      opacity: 0.85;
+      margin-top: 4px;
+    }
+    .weather-temp .date {
+      font-size: 0.8rem;
+      opacity: 0.65;
+      margin-top: 4px;
+    }
+
+    /* 基础信息网格 */
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .info-item {
+      background: rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    .info-item .label {
+      font-size: 0.72rem;
+      opacity: 0.65;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .info-item .value {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    /* 付费区域 */
+    .paid-section {
+      position: relative;
+    }
+    .blur-overlay {
+      position: absolute;
+      inset: 0;
+      backdrop-filter: blur(8px);
+      background: rgba(7, 30, 107, 0.55);
+      border-radius: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      padding: 24px;
+      text-align: center;
+    }
+    .blur-overlay.hidden { display: none; }
+    .lock-icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .blur-overlay h3 { font-size: 1.1rem; margin-bottom: 8px; }
+    .blur-overlay p { font-size: 0.82rem; opacity: 0.8; margin-bottom: 20px; line-height: 1.5; }
+    .price-badge {
+      background: linear-gradient(135deg, #00aeef, #0050b3);
+      border-radius: 999px;
+      padding: 6px 20px;
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: inline-block;
+      box-shadow: 0 4px 12px rgba(0,174,239,0.4);
+    }
+
+    .pay-btn {
+      background: linear-gradient(135deg, #1677ff, #0050b3);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px 32px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 16px rgba(22,119,255,0.5);
+      transition: all 0.2s;
+    }
+    .pay-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(22,119,255,0.6); }
+    .pay-btn:active { transform: translateY(0); }
+    .pay-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    .alipay-logo {
+      font-size: 1.2rem;
+    }
+
+    /* 三天预报 */
+    .forecast-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .forecast-item {
+      background: rgba(255,255,255,0.08);
+      border-radius: 12px;
+      padding: 14px 10px;
+      text-align: center;
+    }
+    .forecast-item .day { font-size: 0.75rem; opacity: 0.7; margin-bottom: 6px; }
+    .forecast-item .f-icon { font-size: 1.8rem; margin-bottom: 6px; }
+    .forecast-item .temps { font-size: 0.85rem; font-weight: 600; }
+    .forecast-item .temps span { opacity: 0.6; font-weight: 400; font-size: 0.78rem; }
+
+    /* 状态消息 */
+    .status-msg {
+      text-align: center;
+      padding: 10px;
+      font-size: 0.85rem;
+      opacity: 0.8;
+      min-height: 30px;
+    }
+    .status-msg.error { color: #ff9a9a; }
+    .status-msg.success { color: #9dfcc5; }
+
+    /* 加载动画 */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-size: 2rem;
+      animation: spin 1.5s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .section-title {
+      font-size: 0.75rem;
+      opacity: 0.6;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 14px;
+    }
+
+    /* 支付模态框 */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop.hidden { display: none; }
+    .modal {
+      background: linear-gradient(135deg, #0f3d8a, #071e6b);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 20px;
+      width: 100%;
+      max-width: 360px;
+      padding: 28px 24px;
+      text-align: center;
+    }
+    .modal h3 { font-size: 1.2rem; margin-bottom: 8px; }
+    .modal p { opacity: 0.75; font-size: 0.85rem; margin-bottom: 20px; }
+    .modal .qr-area {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px;
+      margin: 0 auto 16px;
+      width: 180px;
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #333;
+      font-size: 0.75rem;
+      text-align: center;
+    }
+    .modal-close {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 10px;
+      color: #fff;
+      padding: 10px 24px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      margin-top: 8px;
+    }
+
+    .footer {
+      margin-top: 24px;
+      font-size: 0.75rem;
+      opacity: 0.45;
+      text-align: center;
+      line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🌤 深圳天气</h1>
+  <p>每日精准天气报告 · 支付宝 AI 收款</p>
+</div>
+
+<!-- 免费预览卡片 -->
+<div class="card" id="previewCard">
+  <div id="loadingArea" style="text-align:center;padding:40px 0">
+    <span class="loading">⏳</span>
+    <div style="margin-top:12px;opacity:0.7;font-size:0.9rem">获取天气数据中...</div>
+  </div>
+  <div id="weatherBasic" style="display:none">
+    <div class="weather-main">
+      <div class="weather-icon" id="weatherIcon">☀️</div>
+      <div class="weather-temp">
+        <div class="temp" id="tempDisplay">--°</div>
+        <div class="desc" id="weatherDesc">加载中</div>
+        <div class="date" id="dateDisplay">--</div>
+      </div>
+    </div>
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="label">城市</div>
+        <div class="value">深圳市</div>
+      </div>
+      <div class="info-item">
+        <div class="label">天气</div>
+        <div class="value" id="weatherShort">--</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 付费完整报告卡片 -->
+<div class="card paid-section" id="fullCard">
+  <!-- 付费遮罩 -->
+  <div class="blur-overlay" id="payOverlay">
+    <div class="lock-icon">🔒</div>
+    <h3>完整天气报告</h3>
+    <p>包含体感温度、湿度、风力、<br>能见度、UV指数及三天预报</p>
+    <div class="price-badge">¥0.10 / 次</div>
+    <button class="pay-btn" id="payBtn" onclick="startPayment()">
+      <span class="alipay-logo">💙</span>
+      支付宝 AI 付款
+    </button>
+    <div class="status-msg" id="payStatus"></div>
+  </div>
+
+  <!-- 详细信息（付费后显示） -->
+  <div id="fullWeatherContent">
+    <div class="section-title">详细数据</div>
+    <div class="info-grid" style="margin-bottom:16px">
+      <div class="info-item">
+        <div class="label">体感温度</div>
+        <div class="value" id="feelsLike">--°C</div>
+      </div>
+      <div class="info-item">
+        <div class="label">相对湿度</div>
+        <div class="value" id="humidity">--%</div>
+      </div>
+      <div class="info-item">
+        <div class="label">风速</div>
+        <div class="value" id="windSpeed">-- km/h</div>
+      </div>
+      <div class="info-item">
+        <div class="label">风向</div>
+        <div class="value" id="windDir">--</div>
+      </div>
+      <div class="info-item">
+        <div class="label">能见度</div>
+        <div class="value" id="visibility">-- km</div>
+      </div>
+      <div class="info-item">
+        <div class="label">UV 指数</div>
+        <div class="value" id="uvIndex">--</div>
+      </div>
+    </div>
+
+    <div class="section-title">三天预报</div>
+    <div class="forecast-grid" id="forecastGrid">
+      <div class="forecast-item">
+        <div class="day">今天</div>
+        <div class="f-icon">--</div>
+        <div class="temps">--/<span>--</span></div>
+      </div>
+      <div class="forecast-item">
+        <div class="day">明天</div>
+        <div class="f-icon">--</div>
+        <div class="temps">--/<span>--</span></div>
+      </div>
+      <div class="forecast-item">
+        <div class="day">后天</div>
+        <div class="f-icon">--</div>
+        <div class="temps">--/<span>--</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  数据来源：wttr.in · 支付宝 A2M 协议收款<br>
+  本服务每次付费后可查看当日完整报告
+</div>
+
+<!-- 支付模态框 -->
+<div class="modal-backdrop hidden" id="payModal">
+  <div class="modal">
+    <h3>💙 支付宝扫码付款</h3>
+    <p>请使用支付宝 APP 扫描二维码<br>支付 ¥0.10 查看完整天气报告</p>
+    <div class="qr-area" id="qrArea">
+      <div>正在生成支付码...</div>
+    </div>
+    <div class="status-msg" id="modalStatus">等待支付...</div>
+    <button class="modal-close" onclick="closeModal()">取消支付</button>
+  </div>
+</div>
+
+<script>
+  let weatherData = null;
+
+  // 从图标文字提取 emoji
+  function extractEmoji(str) {
+    const match = str.match(/[\u{1F300}-\u{1FFFF}]|[\u2600-\u26FF]|[\u2700-\u27BF]/u);
+    return match ? match[0] : '🌡️';
+  }
+
+  // 加载免费预览数据
+  async function loadPreview() {
+    try {
+      const res = await fetch('/api/weather/preview');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.message);
+
+      const d = json.data;
+      document.getElementById('loadingArea').style.display = 'none';
+      document.getElementById('weatherBasic').style.display = 'block';
+      document.getElementById('weatherIcon').textContent = extractEmoji(d.weather);
+      document.getElementById('tempDisplay').textContent = d.tempC + '°';
+      document.getElementById('weatherDesc').textContent = d.weather;
+      document.getElementById('dateDisplay').textContent = d.date;
+      document.getElementById('weatherShort').textContent = d.weather.replace(/^[^\s]+ /, '');
+    } catch(e) {
+      document.getElementById('loadingArea').innerHTML =
+        '<div style="color:#ff9a9a;padding:20px">⚠️ 天气数据加载失败<br><small>' + e.message + '</small></div>';
+    }
+  }
+
+  // 开始支付流程
+  async function startPayment() {
+    const btn = document.getElementById('payBtn');
+    const status = document.getElementById('payStatus');
+    btn.disabled = true;
+    btn.textContent = '⏳ 请求中...';
+    status.textContent = '';
+    status.className = 'status-msg';
+
+    try {
+      // 第一步：请求完整数据，获取 402 响应
+      const res = await fetch('/api/weather/full');
+
+      if (res.status === 402) {
+        const paymentNeeded = res.headers.get('Payment-Needed');
+        const body = await res.json();
+
+        status.textContent = '已生成支付请求，请使用支付宝 AI 完成付款';
+        status.className = 'status-msg success';
+
+        // 真实场景：将 Payment-Needed header 传给支付宝 alipay-bot 处理
+        // 这里展示支付信息提示
+        showPaymentGuide(paymentNeeded, body);
+      } else if (res.ok) {
+        // 已有凭证，直接显示
+        const json = await res.json();
+        showFullWeather(json.data);
+      }
+    } catch(e) {
+      status.textContent = '请求失败：' + e.message;
+      status.className = 'status-msg error';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span>💙</span> 支付宝 AI 付款';
+    }
+  }
+
+  function showPaymentGuide(paymentNeeded, body) {
+    const modal = document.getElementById('payModal');
+    const qrArea = document.getElementById('qrArea');
+    const modalStatus = document.getElementById('modalStatus');
+
+    qrArea.innerHTML = `
+      <div style="color:#333;font-size:0.7rem;text-align:center">
+        <div style="font-size:2rem;margin-bottom:8px">💙</div>
+        <div style="font-weight:600;margin-bottom:4px">支付宝 AI 收款</div>
+        <div style="color:#666">请通过支付宝 AI Agent<br>完成 ¥${body.price || '0.10'} 付款</div>
+      </div>
+    `;
+    modalStatus.textContent = '在支付宝 App → 搜索「AI助理」→ 告知付款';
+    modal.classList.remove('hidden');
+
+    // 模拟：3秒后假设支付成功（实际需要 webhook 回调）
+    // 真实部署请替换为 WebSocket 或轮询支付状态
+    setTimeout(async () => {
+      modalStatus.textContent = '✅ 模拟支付成功，正在加载完整报告...';
+      modal.classList.add('hidden');
+      await loadFullWeather('demo_proof_' + Date.now());
+    }, 3000);
+  }
+
+  async function loadFullWeather(proof) {
+    try {
+      const res = await fetch('/api/weather/full?paymentProof=' + encodeURIComponent(proof));
+      const json = await res.json();
+      if (json.success) {
+        showFullWeather(json.data);
+      }
+    } catch(e) {
+      console.error(e);
+    }
+  }
+
+  function showFullWeather(data) {
+    weatherData = data;
+    document.getElementById('payOverlay').classList.add('hidden');
+
+    document.getElementById('feelsLike').textContent = data.feelsLikeC + '°C';
+    document.getElementById('humidity').textContent = data.humidity + '%';
+    document.getElementById('windSpeed').textContent = data.windSpeed + ' km/h';
+    document.getElementById('windDir').textContent = data.windDir;
+    document.getElementById('visibility').textContent = data.visibility + ' km';
+    document.getElementById('uvIndex').textContent = data.uvIndex;
+
+    if (data.forecast && data.forecast.length >= 3) {
+      const grid = document.getElementById('forecastGrid');
+      grid.innerHTML = data.forecast.map(f => `
+        <div class="forecast-item">
+          <div class="day">${f.day}</div>
+          <div class="f-icon">${extractEmoji(f.weather)}</div>
+          <div class="temps">${f.high}°/<span>${f.low}°</span></div>
+        </div>
+      `).join('');
+    }
+  }
+
+  function closeModal() {
+    document.getElementById('payModal').classList.add('hidden');
+    const btn = document.getElementById('payBtn');
+    btn.disabled = false;
+    btn.innerHTML = '<span>💙</span> 支付宝 AI 付款';
+  }
+
+  // 初始化
+  loadPreview();
+</script>
+</body>
+</html>
